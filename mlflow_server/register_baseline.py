@@ -41,7 +41,7 @@ def get_db_uri() -> str:
     port = require_env("DB_DESTINATION_PORT")
     user = require_env("DB_DESTINATION_USER")
     password = require_env("DB_DESTINATION_PASSWORD")
-    dbname = require_env("DB_DESTINATION_DBNAME")
+    dbname = require_env("DB_DESTINATION_NAME")
     return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}"
 
 
@@ -93,7 +93,7 @@ def load_model(model_path: Path):
 
 
 def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    rmse = mean_squared_error(y_true, y_pred, squared=False)
+    rmse = mean_squared_error(y_true, y_pred)
     mae = mean_absolute_error(y_true, y_pred)
     r2 = r2_score(y_true, y_pred)
     return {"rmse": float(rmse), "mae": float(mae), "r2": float(r2)}
