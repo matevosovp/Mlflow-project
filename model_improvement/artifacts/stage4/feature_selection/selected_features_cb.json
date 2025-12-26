@@ -1,0 +1,22 @@
+[
+  "total_area",
+  "latitude",
+  "longitude",
+  "latitude*longitude",
+  "ceiling_height",
+  "is_first_floor*total_area",
+  "living_area*total_area",
+  "ce__building_type_int*has_elevator",
+  "kitchen_area",
+  "building_age",
+  "building_age*latitude",
+  "ceiling_height*living_area",
+  "ceiling_height*latitude",
+  "rooms",
+  "build_year*longitude",
+  "ceiling_height*longitude",
+  "living_area",
+  "area_per_room*longitude",
+  "floors_total",
+  "build_year*building_age"
+]

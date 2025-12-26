@@ -173,3 +173,12 @@ cython_debug/
 
 # Another cache
 cache/
+model_improvement/catboost_info/catboost_training.json
+model_improvement/catboost_info/learn_error.tsv
+model_improvement/catboost_info/time_left.tsv
+.gitignore
+.gitignore
+model_improvement/catboost_info/tmp/cat_feature_index.2b34ff38-47a7294e-e1f835c7-5c4319c4.tmp
+model_improvement/catboost_info/tmp/cat_feature_index.a4c44742-5f655db5-9f589d4d-c52f773a.tmp
+model_improvement/catboost_info/learn/events.out.tfevents
+model_improvement/catboost_info/tmp/cat_feature_index.cbe9f94-fd6c1888-13826c36-6b9a2d3.tmp
