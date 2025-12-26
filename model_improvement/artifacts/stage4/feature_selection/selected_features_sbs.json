@@ -1,9 +1,11 @@
 [
   "total_area",
+  "living_area",
   "ceiling_height",
   "kitchen_area",
   "ce__building_type_int",
   "build_year*floors_total",
+  "floors_total",
   "floor",
   "build_year",
   "building_age",
@@ -11,12 +13,10 @@
   "is_first_floor",
   "has_elevator*is_first_floor",
   "build_year*living_area",
-  "kitchen_area*latitude",
-  "ceiling_height*is_apartment",
-  "is_first_floor*total_area",
-  "area_per_room*rooms",
-  "has_elevator",
-  "flats_count",
+  "floors_total*longitude",
+  "build_year*rooms",
+  "is_apartment",
+  "ceiling_height*longitude",
   "latitude",
   "ceiling_height*floors_total"
 ]
