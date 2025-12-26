@@ -63,6 +63,7 @@ sudo apt-get install python3.10-venv
 python3.10 -m venv .venv_project_name
 
 source .venv_project_name/bin/activate
+pip install -r requirements.txt
 
 ```
 Заполните .env_template и переименуйте в .env
@@ -71,6 +72,13 @@ source .venv_project_name/bin/activate
 # экспортируйте перепенные из .env
 export $(grep -v '^#' .env | xargs)
 ```
-
+Поднять MLFow:
+```bash
+bash mlflow_server/start_mlflow.sh
+```
+Зарегестрировать базовую модель:
+```bash
+python3.10 ./mlflow_server/register_baseline.py
+```
 
 

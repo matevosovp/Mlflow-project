@@ -19,7 +19,7 @@ from sqlalchemy import create_engine
 
 @dataclass(frozen=True)
 class Config:
-    experiment_name: str = "model_FE_matevosov"
+    experiment_name: str = "model_improvement_matevosov"
     registered_model_name: str = "real_estate_price_model"
     run_name: str = "01_baseline"
     table_name: str = "public.real_estate_dataset_clean"
