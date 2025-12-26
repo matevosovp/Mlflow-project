@@ -80,5 +80,5 @@ bash mlflow_server/start_mlflow.sh
 ```bash
 python3.10 ./mlflow_server/register_baseline.py
 ```
-
+Только после всего этого запускайте 'model_improvement.ipynb'
 
