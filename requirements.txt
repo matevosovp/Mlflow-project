@@ -16,10 +16,8 @@ plotly==5.20.0
 nbformat==5.10.3
 kaleido==0.2.1
 boto3==1.34.78
-category-encoders=2.8.1
+category-encoders==2.8.1
 python-dotenv==1.0.1
-mlxtend==0.23.0
 sqlalchemy==2.0.23
-
 matplotlib==3.8.2
 ipykernel==6.27.1
