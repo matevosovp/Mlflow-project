@@ -1,0 +1,42 @@
+artifact_path: model
+flavors:
+  catboost:
+    catboost_version: 1.2.2
+    code: null
+    data: model.cb
+    model_type: CatBoostRegressor
+    save_format: cbm
+  python_function:
+    data: model.cb
+    env:
+      conda: conda.yaml
+      virtualenv: python_env.yaml
+    loader_module: mlflow.catboost
+    python_version: 3.10.12
+mlflow_version: 2.7.1
+model_uuid: 423eb96132f44ddf8dc47bff8fd5bddd
+run_id: 25390d12d8e34a1e84053451f3412246
+saved_input_example_info:
+  artifact_path: input_example.json
+  pandas_orient: split
+  type: dataframe
+signature:
+  inputs: '[{"type": "double", "name": "floor"}, {"type": "double", "name": "kitchen_area"},
+    {"type": "double", "name": "living_area"}, {"type": "double", "name": "total_area"},
+    {"type": "double", "name": "build_year"}, {"type": "double", "name": "latitude"},
+    {"type": "double", "name": "longitude"}, {"type": "double", "name": "ceiling_height"},
+    {"type": "double", "name": "floors_total"}, {"type": "double", "name": "area_per_room"},
+    {"type": "double", "name": "is_first_floor"}, {"type": "double", "name": "building_age"},
+    {"type": "double", "name": "is_apartment"}, {"type": "double", "name": "ce__building_type_int"},
+    {"type": "double", "name": "building_age*latitude"}, {"type": "double", "name":
+    "build_year*building_age"}, {"type": "double", "name": "ce__building_type_int*has_elevator"},
+    {"type": "double", "name": "latitude*longitude"}, {"type": "double", "name": "building_age*longitude"},
+    {"type": "double", "name": "floors_total*longitude"}, {"type": "double", "name":
+    "build_year*floors_total"}, {"type": "double", "name": "ceiling_height*latitude"},
+    {"type": "double", "name": "build_year*rooms"}, {"type": "double", "name": "is_first_floor*total_area"},
+    {"type": "double", "name": "rooms*total_area"}, {"type": "double", "name": "build_year*living_area"},
+    {"type": "double", "name": "ceiling_height*longitude"}, {"type": "double", "name":
+    "ceiling_height*floors_total"}, {"type": "double", "name": "has_elevator*is_first_floor"}]'
+  outputs: '[{"type": "tensor", "tensor-spec": {"dtype": "float64", "shape": [-1]}}]'
+  params: null
+utc_time_created: '2025-12-26 22:45:06.919669'
