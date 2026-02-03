@@ -17,9 +17,6 @@
 - Yandex Object Storage (S3) как artifact store
 - sklearn, catboost, optuna, mlxtend, autofeat
 
-## Бакет для артефактов
-
-`s3-student-mle-20251010-5a382f9c3d`
 
 ## Структура репозитория
 
