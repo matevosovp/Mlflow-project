@@ -3,7 +3,7 @@ import sys
 import pickle
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote_plus, urlparse
 
 import boto3
 import joblib
@@ -19,6 +19,7 @@ from sqlalchemy import create_engine
 
 @dataclass(frozen=True)
 class Config:
+    baseline_s3_uri: str
     experiment_name: str = "model_improvement_matevosov"
     registered_model_name: str = "real_estate_price_model"
     run_name: str = "01_baseline"
@@ -26,7 +27,6 @@ class Config:
     target_col: str = "price"
     random_state: int = 42
     test_size: float = 0.2
-    baseline_s3_uri: str = "s3://s3-student-mle-20251010-5a382f9c3d/models/real_estate/model.pkl"
 
 
 def require_env(name: str) -> str:
@@ -42,7 +42,10 @@ def get_db_uri() -> str:
     user = require_env("DB_DESTINATION_USER")
     password = require_env("DB_DESTINATION_PASSWORD")
     dbname = require_env("DB_DESTINATION_NAME")
-    return f"postgresql+psycopg2://{user}:{password}@{host}:{port}/{dbname}"
+    return (
+        f"postgresql+psycopg2://{quote_plus(user)}:{quote_plus(password)}"
+        f"@{host}:{port}/{dbname}"
+    )
 
 
 def load_dataset(cfg: Config) -> pd.DataFrame:
@@ -111,7 +114,17 @@ def log_environment() -> None:
 
 
 def main() -> None:
-    cfg = Config()
+    cfg = Config(
+        baseline_s3_uri=require_env("BASELINE_MODEL_S3_URI"),
+        experiment_name=os.getenv(
+            "MLFLOW_EXPERIMENT_NAME",
+            "model_improvement_matevosov",
+        ),
+        registered_model_name=os.getenv(
+            "MLFLOW_REGISTERED_MODEL_NAME",
+            "real_estate_price_model",
+        ),
+    )
 
     tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
     mlflow.set_tracking_uri(tracking_uri)
