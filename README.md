@@ -1,91 +1,104 @@
-# MLflow: улучшение и регистрация модели недвижимости
+# MLflow: воспроизводимое улучшение модели недвижимости
 
 [![Quality checks](https://github.com/matevosovp/Mlflow-project/actions/workflows/quality.yml/badge.svg)](https://github.com/matevosovp/Mlflow-project/actions/workflows/quality.yml)
+[![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/release/python-3120/)
 
-Проект демонстрирует воспроизводимый цикл экспериментов для регрессии стоимости недвижимости: baseline-модель импортируется из S3, последовательно улучшается и регистрируется в MLflow Model Registry.
+Production-oriented учебный проект, который показывает полный цикл обучения регрессионной модели: безопасное извлечение данных из PostgreSQL, воспроизводимый train/validation/test workflow, подбор CatBoost, логирование в MLflow и регистрацию готового raw-input pipeline в Model Registry.
 
-## Коротко о проекте
+Главный акцент проекта — не только получить метрику, но и сделать результат проверяемым, воспроизводимым и пригодным для следующего шага: online serving.
 
-- PostgreSQL используется как источник данных, backend store и Model Registry store;
-- S3-compatible storage хранит модели и experiment artifacts;
-- все стадии сравниваются внутри одного MLflow experiment;
-- параметры, метрики, окружение и lineage модели сохраняются в runs;
-- в Registry создаются отдельные версии baseline, feature engineering, feature selection и tuned-модели;
-- конфигурация вынесена в переменные окружения, без личных bucket names и секретов в коде.
+Ограничения, intended use и риски описаны отдельно в [`MODEL_CARD.md`](MODEL_CARD.md); правила безопасной работы с секретами и model artifacts — в [`SECURITY.md`](SECURITY.md).
+
+## Что демонстрирует проект
+
+- PostgreSQL как источник данных, MLflow backend и Model Registry store;
+- S3-compatible storage для моделей и experiment artifacts;
+- безопасный SQLAlchemy Core query с явным контрактом из 18 колонок;
+- group-aware выборки примерно 60% train, 20% validation, 20% test без пересечения зданий;
+- Optuna и `RandomizedSearchCV`, оцениваемые на одной отдельной validation-выборке;
+- единый сериализуемый sklearn Pipeline от сырых признаков до CatBoost prediction;
+- dataset fingerprint, model signature, input example, параметры и метрики в MLflow;
+- привязка Registry version к точному `run_id`, а не к «последней» версии;
+- автоматические unit tests, lint, dependency check и notebook validation в CI.
 
 ## Архитектура
 
 ```text
-PostgreSQL: public.real_estate_dataset_clean
-                    │
-                    ▼
-          model_improvement.ipynb
-                    │
-        ┌───────────┴────────────┐
-        ▼                        ▼
-MLflow Tracking            MLflow Artifacts
-PostgreSQL backend         S3-compatible storage
-        │                        │
-        └───────────┬────────────┘
-                    ▼
-             Model Registry
-        baseline → FE → selection → tuning
+PostgreSQL
+    │  SQLAlchemy reflection + explicit column contract
+    ▼
+Validated DataFrame
+    │
+    ├── train ≈60% ─────── fit / tuning
+    ├── validation ≈20% ── model selection only
+    └── test ≈20% ──────── one final evaluation
+                              │
+Raw input ─► domain features ─► imputation / one-hot ─► selection ─► CatBoost
+                              │
+                              ▼
+                     MLflow Tracking + S3
+                              │
+                              ▼
+                Model Registry alias: candidate
 ```
 
-## Этапы эксперимента
+Разбиение выполняется по `building_id`: квартиры одного здания не могут оказаться в разных частях. Test labels доступны только в финальной части `train_and_register`: после выбора параметров модель один раз переобучается на train+validation и один раз оценивается на test.
 
-| Этап | Что происходит | Результат в MLflow |
-|---|---|---|
-| 1. Baseline | загрузка готовой модели из S3 и оценка на едином holdout | первая зарегистрированная версия |
-| 2. Feature engineering | генерация и проверка новых признаков | отдельный run и версия модели |
-| 3. Feature selection | отбор полезных признаков | сравнимые метрики и artifacts |
-| 4. Hyperparameter tuning | подбор параметров CatBoost через Optuna | финальная tuned-версия |
+## Model contract
 
-Основные метрики регрессии: **RMSE, MAE и R²**. Фиксированный `random_state=42` и единый test split позволяют корректно сравнивать стадии между собой.
+Зарегистрированная модель принимает исходные бизнес-признаки таблицы, а не заранее подготовленную матрицу. Технические идентификаторы не входят в serving contract. В MLflow сохраняется весь pipeline:
 
-## Что логируется
+1. удаление идентификаторов `flat_id` и `building_id` до формирования signature;
+2. детерминированные domain features: возраст здания, доли площадей, положение этажа и другие отношения;
+3. imputation и обработка неизвестных категорий;
+4. feature selection внутри Pipeline;
+5. sklearn-совместимый адаптер CatBoost;
+6. input example и signature для проверки входной схемы.
 
-- параметры данных и модели;
-- RMSE, MAE и R² на holdout;
-- размер датасета и число признаков;
-- исходная и MLflow-упакованная модели;
-- input example и model signature;
-- `pip freeze` для восстановления окружения;
-- теги stage, lineage, source и data table;
-- описание и метрики каждой версии в Model Registry.
+Это позволяет загрузить Registry version и вызвать `predict` непосредственно на исходном DataFrame.
 
-Скрипт [`register_baseline.py`](mlflow_server/register_baseline.py) связывает исходную baseline-модель, данные, run и созданную версию Registry.
-
-## Структура репозитория
+## Структура
 
 ```text
 .
+├── mlflow_project/
+│   ├── config.py       # typed env configuration и безопасный database URL
+│   ├── data.py         # SQL extraction, data contract, fingerprint и split
+│   ├── features.py     # raw-input feature/model Pipeline
+│   ├── training.py     # tuning, final test, MLflow logging и registration
+│   └── registry.py     # выбор версии строго по run_id
 ├── mlflow_server/
-│   ├── start_mlflow.sh          # запуск Tracking Server и Registry
-│   └── register_baseline.py     # импорт и регистрация baseline
+│   ├── start_mlflow.sh
+│   └── register_baseline.py
 ├── model_improvement/
-│   └── model_improvement.ipynb  # feature engineering, selection и tuning
+│   └── model_improvement.ipynb  # тонкий review-friendly entry point
+├── tests/
 ├── requirements.txt
+├── requirements-notebook.txt
+├── requirements-dev.txt
 └── .env.example
 ```
 
+Логика намеренно вынесена из notebook в Python package. Notebook показывает этапы и вызывает тестируемые функции, поэтому код обучения не дублируется в нескольких местах.
+
 ## Быстрый старт
 
-Требуются Python 3.10, доступ к PostgreSQL и S3-compatible storage.
+Требуются Python 3.12, PostgreSQL и S3-compatible storage.
 
 ```bash
 git clone https://github.com/matevosovp/Mlflow-project.git
 cd Mlflow-project
 
-python3.10 -m venv .venv
+python3.12 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+python -m pip install --upgrade pip
+python -m pip install -r requirements-notebook.txt
 
 cp .env.example .env
-# заполните PostgreSQL, S3 и BASELINE_MODEL_S3_URI
+# заполните подключения и параметры baseline
 ```
 
-Реальные секреты должны находиться только в локальном `.env`; этот файл исключён из Git.
+Python entry points и startup script автоматически читают корневой `.env`. Пароль PostgreSQL передаётся через `sqlalchemy.URL`, поэтому специальные символы корректно кодируются и не выводятся в лог.
 
 ### 1. Запустить MLflow
 
@@ -93,62 +106,74 @@ cp .env.example .env
 bash mlflow_server/start_mlflow.sh
 ```
 
-По умолчанию интерфейс будет доступен на `http://127.0.0.1:5000`. Host и port настраиваются через `MLFLOW_HOST` и `MLFLOW_PORT`.
+По умолчанию UI доступен на `http://127.0.0.1:5000`. Tracking Server использует PostgreSQL для backend/Registry и S3 bucket как artifact root. С `--no-serve-artifacts` MLflow clients обращаются к S3 напрямую и должны иметь собственные AWS/IAM credentials.
 
-Startup script:
+### 2. Зарегистрировать проверенный baseline
 
-- проверяет наличие обязательных переменных;
-- безопасно URL-кодирует имя пользователя и пароль PostgreSQL;
-- не выводит пароль или полный database URI в лог;
-- использует `S3_BUCKET_NAME` только из окружения.
-
-### 2. Зарегистрировать baseline
+Сначала вычислите SHA-256 доверенного model artifact и укажите его в `BASELINE_MODEL_SHA256`. Скрипт откажется десериализовать файл, если digest не совпадает.
 
 ```bash
-python mlflow_server/register_baseline.py
+python -m mlflow_server.register_baseline
 ```
 
-Путь к исходной модели передаётся через `BASELINE_MODEL_S3_URI`. Названия experiment и registered model можно переопределить переменными `MLFLOW_EXPERIMENT_NAME` и `MLFLOW_REGISTERED_MODEL_NAME`.
+Baseline оценивается на том же детерминированном test split и получает Registry alias `baseline`.
 
-### 3. Запустить эксперименты
+### 3. Обучить и зарегистрировать candidate
+
+```bash
+python -m mlflow_project.training
+```
+
+Можно также открыть демонстрационный notebook:
 
 ```bash
 jupyter lab model_improvement/model_improvement.ipynb
 ```
 
-Выполняйте ноутбук последовательно после успешной регистрации baseline, чтобы все версии модели попали в один experiment и Registry.
+Финальная версия получает alias `candidate`. Продвижение в `champion` намеренно не автоматизировано: это отдельное решение после сравнения с baseline и проверки бизнес-порога.
 
-## Переменные окружения
+## Что сохраняется в MLflow
 
-| Группа | Переменные |
-|---|---|
-| PostgreSQL | `DB_DESTINATION_HOST`, `DB_DESTINATION_PORT`, `DB_DESTINATION_NAME`, `DB_DESTINATION_USER`, `DB_DESTINATION_PASSWORD` |
-| S3 | `MLFLOW_S3_ENDPOINT_URL`, `S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `BASELINE_MODEL_S3_URI` |
-| MLflow | `MLFLOW_TRACKING_URI`, `MLFLOW_HOST`, `MLFLOW_PORT`, `MLFLOW_EXPERIMENT_NAME`, `MLFLOW_REGISTERED_MODEL_NAME` |
+- полный конфиг split и random seed;
+- SHA-256 fingerprint датасета;
+- результаты Optuna и Randomized Search на validation;
+- единственные финальные RMSE, MAE и R² на test;
+- выбранный tuning method и параметры;
+- raw input example и model signature;
+- полный preprocessing + model Pipeline;
+- Registry tags, описание, run lineage и alias.
 
-Полный безопасный шаблон находится в [`.env.example`](.env.example).
+Старые локальные графики и метрики не хранятся в Git: они легко устаревают и могут расходиться с Registry. Каждый воспроизводимый запуск сохраняет отчёты рядом с моделью в MLflow artifacts.
 
 ## Проверка качества
 
-GitHub Actions автоматически проверяет:
-
-- синтаксис Python-модулей;
-- корректность startup shell script;
-- целостность JSON-структуры ноутбука.
-
-Локальный запуск тех же базовых проверок:
-
 ```bash
-python -m compileall -q mlflow_server
+python -m pip install -r requirements-dev.txt
+python -m ruff check .
+python -m pytest -q
+python -m compileall -q mlflow_project mlflow_server
 bash -n mlflow_server/start_mlflow.sh
 python -m json.tool model_improvement/model_improvement.ipynb > /dev/null
 ```
 
-## Ограничения
+Тесты проверяют:
 
-- PostgreSQL и S3 предоставляются отдельно и не поднимаются этим репозиторием;
-- основной experiment workflow оформлен в ноутбуке, а не в отдельном CLI-пайплайне;
-- проект отвечает за tracking и registry, но не за online serving;
-- для production следует добавить аутентификацию и TLS перед публикацией MLflow UI.
+- отсутствие пересечений строк и `building_id` между train/validation/test;
+- правильное использование `PredefinedSplit`;
+- блокировку небезопасных SQL identifiers;
+- URL-кодирование credentials;
+- raw-input prediction полного Pipeline;
+- выбор Registry version по текущему `run_id`.
 
-Следующий этап жизненного цикла модели — [FastAPI-сервис с Prometheus и Grafana](https://github.com/matevosovp/ML-model_deployment_in_a_cloud_infrastructure).
+GitHub Actions запускает эти проверки на каждом push и pull request.
+
+## Безопасность и ограничения
+
+- `.env`, данные, модели и локальные artifacts исключены из Git;
+- baseline deserialization разрешается только после проверки доверенного SHA-256;
+- S3 credentials могут поставляться стандартной boto3 credential chain или IAM role;
+- MLflow UI запускается на loopback interface; для внешнего доступа нужны TLS, authentication и reverse proxy;
+- PostgreSQL и S3 являются внешней инфраструктурой и не создаются этим репозиторием;
+- online serving находится в следующем проекте жизненного цикла.
+
+Продолжение: [FastAPI-сервис с Prometheus и Grafana](https://github.com/matevosovp/ML-model_deployment_in_a_cloud_infrastructure).

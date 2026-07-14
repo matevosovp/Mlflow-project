@@ -1,247 +1,180 @@
+"""Register a checksum-verified baseline model against the shared holdout split."""
+
+from __future__ import annotations
+
+import hashlib
+import json
 import os
-import sys
-import pickle
-from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import quote_plus, urlparse
+from tempfile import TemporaryDirectory
+from urllib.parse import urlparse
 
 import boto3
 import joblib
 import mlflow
-import numpy as np
-import pandas as pd
+import mlflow.sklearn
 from mlflow.models import infer_signature
 from mlflow.tracking import MlflowClient
-from sklearn.metrics import mean_absolute_error, root_mean_squared_error, r2_score
-from sklearn.model_selection import train_test_split
-from sqlalchemy import create_engine
+
+from mlflow_project.config import AppConfig
+from mlflow_project.data import dataset_fingerprint, load_dataset, split_dataset
+from mlflow_project.features import prepare_model_contract_frame
+from mlflow_project.registry import update_registered_version
+from mlflow_project.training import regression_metrics
 
 
-@dataclass(frozen=True)
-class Config:
-    baseline_s3_uri: str
-    experiment_name: str = "model_improvement_matevosov"
-    registered_model_name: str = "real_estate_price_model"
-    run_name: str = "01_baseline"
-    table_name: str = "public.real_estate_dataset_clean"
-    target_col: str = "price"
-    random_state: int = 42
-    test_size: float = 0.2
-
-
-def require_env(name: str) -> str:
-    val = os.getenv(name)
-    if not val:
+def required_environment(name: str) -> str:
+    value = os.getenv(name)
+    if value is None or not value.strip():
         raise RuntimeError(f"Environment variable {name} is required")
-    return val
+    return value.strip()
 
 
-def get_db_uri() -> str:
-    host = require_env("DB_DESTINATION_HOST")
-    port = require_env("DB_DESTINATION_PORT")
-    user = require_env("DB_DESTINATION_USER")
-    password = require_env("DB_DESTINATION_PASSWORD")
-    dbname = require_env("DB_DESTINATION_NAME")
-    return (
-        f"postgresql+psycopg2://{quote_plus(user)}:{quote_plus(password)}"
-        f"@{host}:{port}/{dbname}"
-    )
+def parse_s3_uri(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3" or not parsed.netloc or not parsed.path.lstrip("/"):
+        raise ValueError("BASELINE_MODEL_S3_URI must be s3://bucket/key")
+    return parsed.netloc, parsed.path.lstrip("/")
 
 
-def load_dataset(cfg: Config) -> pd.DataFrame:
-    engine = create_engine(get_db_uri())
-    query = f"SELECT * FROM {cfg.table_name}"
-    df = pd.read_sql(query, engine)
-    if cfg.target_col not in df.columns:
-        raise RuntimeError(f"Target column '{cfg.target_col}' not found in table {cfg.table_name}")
-    return df
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
-def parse_s3_uri(s3_uri: str) -> tuple[str, str]:
-    parsed = urlparse(s3_uri)
-    if parsed.scheme != "s3":
-        raise ValueError(f"Expected s3 uri, got: {s3_uri}")
-    bucket = parsed.netloc
-    key = parsed.path.lstrip("/")
-    return bucket, key
+def download_verified_model(destination: Path) -> tuple[object, str]:
+    uri = required_environment("BASELINE_MODEL_S3_URI")
+    expected_sha256 = required_environment("BASELINE_MODEL_SHA256").lower()
+    if len(expected_sha256) != 64 or any(c not in "0123456789abcdef" for c in expected_sha256):
+        raise ValueError("BASELINE_MODEL_SHA256 must contain exactly 64 hex characters")
 
-
-def download_from_s3(s3_uri: str, dst_path: Path) -> Path:
-    endpoint = require_env("MLFLOW_S3_ENDPOINT_URL")
-    aws_key = require_env("AWS_ACCESS_KEY_ID")
-    aws_secret = require_env("AWS_SECRET_ACCESS_KEY")
-
-    bucket, key = parse_s3_uri(s3_uri)
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-
-    s3 = boto3.client(
+    bucket, key = parse_s3_uri(uri)
+    client = boto3.client(
         "s3",
-        endpoint_url=endpoint,
-        aws_access_key_id=aws_key,
-        aws_secret_access_key=aws_secret,
+        endpoint_url=required_environment("MLFLOW_S3_ENDPOINT_URL"),
     )
-    s3.download_file(bucket, key, str(dst_path))
-    return dst_path
+    client.download_file(bucket, key, str(destination))
+    actual_sha256 = sha256_file(destination)
+    if actual_sha256 != expected_sha256:
+        raise RuntimeError(
+            "Baseline checksum mismatch: refusing to deserialize the downloaded file"
+        )
+
+    # joblib/pickle deserialization can execute code. The mandatory trusted digest
+    # is verified immediately before this call.
+    return joblib.load(destination), actual_sha256
 
 
-def load_model(model_path: Path):
-    try:
-        return joblib.load(model_path)
-    except Exception:
-        pass
+def baseline_features(model: object, frame):
+    feature_names = getattr(model, "feature_names_in_", None)
+    if feature_names is not None:
+        expected = [str(name) for name in feature_names]
+        missing = sorted(set(expected) - set(frame.columns))
+        if missing:
+            raise RuntimeError(
+                f"Baseline model expects missing columns: {', '.join(missing)}"
+            )
+        return frame.loc[:, expected]
 
-    with open(model_path, "rb") as f:
-        return pickle.load(f)
-
-
-def regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
-    rmse = root_mean_squared_error(y_true, y_pred)
-    mae = mean_absolute_error(y_true, y_pred)
-    r2 = r2_score(y_true, y_pred)
-    return {"rmse": float(rmse), "mae": float(mae), "r2": float(r2)}
-
-
-def log_environment() -> None:
-    # Логируем окружение максимально прозрачно
-    import subprocess
-
-    try:
-        freeze = subprocess.check_output([sys.executable, "-m", "pip", "freeze"], text=True)
-    except Exception as e:
-        freeze = f"pip freeze failed: {e}"
-
-    mlflow.log_text(freeze, artifact_file="environment/pip_freeze.txt")
+    drop_columns = tuple(
+        value.strip()
+        for value in os.getenv(
+            "BASELINE_DROP_COLUMNS", "flat_id,building_id,studio"
+        ).split(",")
+        if value.strip()
+    )
+    return frame.drop(columns=list(drop_columns), errors="ignore")
 
 
 def main() -> None:
-    cfg = Config(
-        baseline_s3_uri=require_env("BASELINE_MODEL_S3_URI"),
-        experiment_name=os.getenv(
-            "MLFLOW_EXPERIMENT_NAME",
-            "model_improvement_matevosov",
-        ),
-        registered_model_name=os.getenv(
-            "MLFLOW_REGISTERED_MODEL_NAME",
-            "real_estate_price_model",
-        ),
+    config = AppConfig.from_env()
+    data = load_dataset(
+        config.database,
+        config.table_name,
+        target_column=config.target_column,
+    )
+    splits = split_dataset(
+        data,
+        target_column=config.target_column,
+        validation_size=config.validation_size,
+        test_size=config.test_size,
+        random_state=config.random_state,
+        group_column=config.split_group_column,
     )
 
-    tracking_uri = os.getenv("MLFLOW_TRACKING_URI", "http://127.0.0.1:5000")
-    mlflow.set_tracking_uri(tracking_uri)
-    mlflow.set_experiment(cfg.experiment_name)
+    with TemporaryDirectory() as directory:
+        model, checksum = download_verified_model(Path(directory) / "baseline.joblib")
 
-    df = load_dataset(cfg)
-    y = df[cfg.target_col].to_numpy()
-    X = df.drop(columns=[cfg.target_col])
+        X_test = baseline_features(model, splits.X_test)
+        predictions = model.predict(X_test)
+        metrics = regression_metrics(splits.y_test, predictions)
 
-    # Простейшая защита от полностью пустых колонок
-    non_all_null_cols = [c for c in X.columns if not X[c].isna().all()]
-    X = X[non_all_null_cols]
+        mlflow.set_tracking_uri(config.tracking_uri)
+        mlflow.set_experiment(config.experiment_name)
+        with mlflow.start_run(run_name="register_verified_baseline") as run:
+            mlflow.set_tags(
+                {
+                    "stage": "baseline",
+                    "source": "checksum_verified_s3_object",
+                    "split_policy": "shared_disjoint_holdout",
+                }
+            )
+            mlflow.log_params(
+                {
+                    "table_name": config.table_name,
+                    "target_column": config.target_column,
+                    "random_state": config.random_state,
+                    "baseline_sha256": checksum,
+                    "dataset_sha256": dataset_fingerprint(data),
+                    **splits.summary(),
+                }
+            )
+            mlflow.log_metrics({f"test_{key}": value for key, value in metrics.items()})
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y,
-        test_size=cfg.test_size,
-        random_state=cfg.random_state,
-    )
-
-    local_model_path = Path("tmp") / "baseline_model.pkl"
-    download_from_s3(cfg.baseline_s3_uri, local_model_path)
-    model = load_model(local_model_path)
-
-    
-    run_name = cfg.run_name
-
-    with mlflow.start_run(run_name=run_name) as run:
-        # Теги на уровне run (видно в Experiments)
-        mlflow.set_tag("stage", "baseline")
-        mlflow.set_tag("run_purpose", "register_baseline_model")
-        mlflow.set_tag("model_lineage", "baseline_from_s3")
-        mlflow.set_tag("data_table", cfg.table_name)
-        mlflow.set_tag("target", cfg.target_col)
-
-        # Параметры
-        mlflow.log_param("model_kind", "baseline")
-        mlflow.log_param("baseline_s3_uri", cfg.baseline_s3_uri)
-        mlflow.log_param("table_name", cfg.table_name)
-        mlflow.log_param("target_col", cfg.target_col)
-        mlflow.log_param("random_state", cfg.random_state)
-        mlflow.log_param("test_size", cfg.test_size)
-        mlflow.log_param("n_rows", int(df.shape[0]))
-        mlflow.log_param("n_features", int(X.shape[1]))
-
-        # Метрики baseline считаем на тестовой выборке
-        y_pred = model.predict(X_test)
-        metrics = regression_metrics(y_test, y_pred)
-        mlflow.log_metrics(metrics)
-
-        signature = infer_signature(X_test, y_pred)
-
-        # Сохраняем "сырую" baseline модель как артефакт (как была скачана)
-        mlflow.log_artifact(str(local_model_path), artifact_path="baseline/raw_model")
-
-        # Логируем модель в MLflow + регистрируем в Registry
-        model_info = mlflow.sklearn.log_model(
-            sk_model=model,
-            artifact_path="model",
-            signature=signature,
-            input_example=X_test.head(5),
-            registered_model_name=cfg.registered_model_name,
-        )
-
-        # Окружение
-        log_environment()
-
-        # Помечаем именно ВЕРСИЮ в Model Registry, чтобы в UI было очевидно
-        client = MlflowClient()
-
-        # Находим версию, созданную именно этим run
-        versions = client.search_model_versions(f"name='{cfg.registered_model_name}'")
-        versions_this_run = [v for v in versions if getattr(v, "run_id", None) == run.info.run_id]
-
-        if not versions_this_run:
-            raise RuntimeError(
-                "Не удалось найти model version, созданную текущим run. "
-                "Проверьте, что registered_model_name задан верно."
+            input_example = prepare_model_contract_frame(
+                X_test.head(5), drop_identifiers=False
+            )
+            signature = infer_signature(input_example, model.predict(input_example))
+            mlflow.sklearn.log_model(
+                sk_model=model,
+                name="model",
+                signature=signature,
+                input_example=input_example,
+                registered_model_name=config.registered_model_name,
+                serialization_format="cloudpickle",
             )
 
-        # Берем самую свежую версию текущего run
-        new_v = sorted(versions_this_run, key=lambda v: int(v.version))[-1]
-        new_version = str(new_v.version)  # ВАЖНО: строка
+            version = update_registered_version(
+                MlflowClient(),
+                model_name=config.registered_model_name,
+                run_id=run.info.run_id,
+                tags={
+                    "stage": "baseline",
+                    "sha256": checksum,
+                    "rmse_test": f"{metrics['rmse']:.6f}",
+                },
+                description=(
+                    "Checksum-verified baseline evaluated on the shared test split. "
+                    f"RMSE={metrics['rmse']:.6f}, R2={metrics['r2']:.6f}. "
+                    f"Run: {run.info.run_id}"
+                ),
+                alias="baseline",
+            )
 
-        # Теги на уровне версии (Model Registry)
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "stage", "baseline")
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "source", "s3")
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "baseline_s3_uri", cfg.baseline_s3_uri)
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "table_name", cfg.table_name)
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "target_col", cfg.target_col)
-
-        # Метрики лучше писать как строки
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "rmse_test", f"{metrics.get('rmse', float('nan')):.6f}")
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "mae_test", f"{metrics.get('mae', float('nan')):.6f}")
-        client.set_model_version_tag(cfg.registered_model_name, new_version, "r2_test", f"{metrics.get('r2', float('nan')):.6f}")
-
-        desc = (
-            "Этап 1. Baseline модель (регистрация)\n"
-            f"- Источник: {cfg.baseline_s3_uri}\n"
-            f"- Данные: {cfg.table_name}, target={cfg.target_col}\n"
-            f"- Метрики на test: RMSE={metrics.get('rmse'):.6f}, MAE={metrics.get('mae'):.6f}, R2={metrics.get('r2'):.6f}\n"
-            f"- Run: {run.info.run_id}\n"
+    print(
+        json.dumps(
+            {
+                "run_id": run.info.run_id,
+                "model_version": version,
+                "metrics": metrics,
+            },
+            ensure_ascii=False,
+            indent=2,
         )
-
-        # update_model_version тоже принимает version как str
-        client.update_model_version(
-            name=cfg.registered_model_name,
-            version=new_version,
-            description=desc,
-        )
-
-        print("Baseline registered")
-        print(f"  experiment: {cfg.experiment_name}")
-        print(f"  run_id: {run.info.run_id}")
-        print(f"  registered_model_name: {cfg.registered_model_name}")
-        print(f"  model_version: {new_version}")
-        print(f"  model_uri: {model_info.model_uri}")
-
+    )
 
 
 if __name__ == "__main__":
