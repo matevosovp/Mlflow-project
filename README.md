@@ -1,5 +1,7 @@
 # MLflow: улучшение и регистрация модели недвижимости
 
+[Портфолио автора](https://github.com/matevosovp) · [Другие ML-проекты](https://github.com/matevosovp/matevosovp/blob/main/projects/README.md)
+
 [![Quality checks](https://github.com/matevosovp/Mlflow-project/actions/workflows/quality.yml/badge.svg)](https://github.com/matevosovp/Mlflow-project/actions/workflows/quality.yml)
 
 Проект демонстрирует воспроизводимый цикл экспериментов для регрессии стоимости недвижимости: baseline-модель импортируется из S3, последовательно улучшается и регистрируется в MLflow Model Registry.
@@ -151,4 +153,4 @@ python -m json.tool model_improvement/model_improvement.ipynb > /dev/null
 - проект отвечает за tracking и registry, но не за online serving;
 - для production следует добавить аутентификацию и TLS перед публикацией MLflow UI.
 
-Следующий этап жизненного цикла модели — [FastAPI-сервис с Prometheus и Grafana](https://github.com/matevosovp/ML-model_deployment_in_a_cloud_infrastructure).
+Следующий этап жизненного цикла модели - [FastAPI-сервис с Prometheus и Grafana](https://github.com/matevosovp/ML-model_deployment_in_a_cloud_infrastructure).
